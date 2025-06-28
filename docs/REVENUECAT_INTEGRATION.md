@@ -19,7 +19,7 @@
 ### Step 1.1: Install RevenueCat SDK
 
 ```bash
-npm install react-native-purchases
+npm install purchases-js
 ```
 
 ### Step 1.2: Update Package.json
@@ -29,7 +29,7 @@ Add the RevenueCat dependency to your project:
 ```json
 {
   "dependencies": {
-    "react-native-purchases": "^7.0.0"
+    "purchases-js": "^8.2.3"
   }
 }
 ```
@@ -82,7 +82,7 @@ import Purchases, {
   CustomerInfo,
   PurchasesError,
   LOG_LEVEL
-} from 'react-native-purchases';
+} from 'purchases-js';
 
 export interface SubscriptionPlan {
   id: string;

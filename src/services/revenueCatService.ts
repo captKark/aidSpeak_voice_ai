@@ -4,7 +4,7 @@ import Purchases, {
   CustomerInfo,
   PurchasesError,
   LOG_LEVEL
-} from 'purchases-js';
+} from '@revenuecat/purchases';
 
 export interface SubscriptionPlan {
   id: string;

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, Loader2, AlertCircle, Square, CheckCircle, Volume2, Languages, Globe, Zap, Brain } from 'lucide-react';
 import { VoiceRecordingState, TranslationResult } from '../types/emergency';
 import { translationService } from '../services/translationService';
+import { trackVoiceEvent, trackTranslationEvent, Sentry } from '../lib/sentry';
 
 interface VoiceRecorderProps {
   onRecordingComplete: (transcription: string, audioBlob: Blob, confidence: number, translationResult?: TranslationResult) => void;
@@ -481,6 +482,11 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
       isRecognitionActiveRef.current = true;
       recognitionErrorRef.current = false;
       setIsListening(true);
+      
+      // Track voice recording start
+      trackVoiceEvent('start', {
+        language: currentRecognitionLanguage,
+      });
     };
 
     recognitionRef.current.onend = () => {
@@ -569,6 +575,12 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
       console.error('🚨 Speech recognition error:', event.error);
       isRecognitionActiveRef.current = false;
       setIsListening(false);
+      
+      // Track voice recording error
+      trackVoiceEvent('error', {
+        errorType: event.error,
+        language: currentRecognitionLanguage,
+      });
       
       switch (event.error) {
         case 'no-speech':
@@ -777,6 +789,12 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
         setIsLiveTranslating(true);
         setTranslationError(null);
         
+        // Track translation start
+        trackTranslationEvent('start', {
+          textLength: text.length,
+          sourceLanguage: detectedLanguage || 'unknown',
+        });
+        
         // Enhanced language detection with script analysis
         const enhancedDetection = await translationService.detectLanguageEnhanced(text);
         
@@ -798,6 +816,14 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
               setLiveTranslation(result);
               setEnglishTranslation(result.translatedText);
               console.log(`🌍 ${getLanguageName(language)} (${script}): "${text}" -> English: "${result.translatedText}"`);
+              
+              // Track successful translation
+              trackTranslationEvent('success', {
+                sourceLanguage: language,
+                targetLanguage: 'en',
+                confidence: result.confidence,
+                textLength: text.length,
+              });
             }
           } else if (language === 'en') {
             // It's already English
@@ -814,6 +840,14 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
       } catch (error) {
         console.error('Enhanced live language detection and translation failed:', error);
         setTranslationError('Translation temporarily unavailable');
+        
+        // Track translation error
+        trackTranslationEvent('error', {
+          sourceLanguage: detectedLanguage || 'unknown',
+          targetLanguage: 'en',
+          textLength: text.length,
+          errorType: error instanceof Error ? error.message : 'unknown',
+        });
       } finally {
         setIsLiveTranslating(false);
       }
@@ -835,6 +869,13 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
       setProcessingStatus('Finalizing enhanced translation...');
       setTranslationError(null);
 
+      // Track final translation start
+      trackTranslationEvent('start', {
+        sourceLanguage: detectedLanguage || 'unknown',
+        targetLanguage: 'en',
+        textLength: text.length,
+      });
+
       // Use live translation if it's recent and matches well
       if (liveTranslation && 
           liveTranslation.status === 'completed' && 
@@ -844,6 +885,15 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
           isTranslating: false,
           translationResult: liveTranslation
         }));
+        
+        // Track successful translation
+        trackTranslationEvent('success', {
+          sourceLanguage: liveTranslation.sourceLanguage,
+          targetLanguage: 'en',
+          confidence: liveTranslation.confidence,
+          textLength: text.length,
+        });
+        
         return liveTranslation;
       }
 
@@ -860,6 +910,14 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
       if (result) {
         setEnglishTranslation(result.translatedText);
         console.log(`✅ Final enhanced translation - ${getLanguageName(result.sourceLanguage)} (${detectedScript}): "${text}" -> English: "${result.translatedText}"`);
+        
+        // Track successful translation
+        trackTranslationEvent('success', {
+          sourceLanguage: result.sourceLanguage,
+          targetLanguage: 'en',
+          confidence: result.confidence,
+          textLength: text.length,
+        });
       }
       
       return result;
@@ -871,6 +929,14 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
         : 'Translation unavailable. Please try again.';
       
       setTranslationError(errorMessage);
+      
+      // Track translation error
+      trackTranslationEvent('error', {
+        sourceLanguage: detectedLanguage || 'unknown',
+        targetLanguage: 'en',
+        textLength: text.length,
+        errorType: errorMessage,
+      });
       
       const failedResult = {
         translatedText: text,
@@ -1027,6 +1093,14 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
           setProcessingStatus('Enhanced recording and translation complete!');
           setState(prev => ({ ...prev, isProcessing: false }));
           
+          // Track successful voice recording
+          trackVoiceEvent('success', {
+            duration: state.duration,
+            language: detectedLanguage || 'unknown',
+            confidence: confidence,
+            hasTranslation: !!translationResult,
+          });
+          
           console.log('🎯 Final submission data:', {
             original: bestTranscript,
             english: translationResult?.translatedText || englishTranslation,
@@ -1067,6 +1141,19 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
 
     } catch (error) {
       console.error('Error accessing microphone:', error);
+      
+      // Track microphone access error
+      trackVoiceEvent('error', {
+        errorType: 'microphone_access',
+      });
+      
+      // Capture microphone access error with Sentry
+      Sentry.withScope((scope) => {
+        scope.setTag('operation', 'microphone_access');
+        scope.setLevel('error');
+        Sentry.captureException(error);
+      });
+      
       setState(prev => ({ 
         ...prev, 
         isRecording: false, 
@@ -1106,6 +1193,13 @@ export default function VoiceRecorder({ onRecordingComplete, disabled }: VoiceRe
     }
 
     recognitionErrorRef.current = true; // Prevent restart attempts
+
+    // Track voice recording stop
+    trackVoiceEvent('stop', {
+      duration: state.duration,
+      language: detectedLanguage || 'unknown',
+      confidence: confidenceRef.current,
+    });
 
     setState(prev => ({ 
       ...prev, 

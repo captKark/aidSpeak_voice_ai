@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle, XCircle, ArrowLeft, ArrowRight, RotateCcw, FileText, Settings, Download, HelpCircle, X } from 'lucide-react';
 import VoiceRecorder from './components/VoiceRecorder';
 import EmergencySelector from './components/EmergencySelector';
@@ -7,6 +7,7 @@ import ReportSummary from './components/ReportSummary';
 import SupabaseStatus from './components/SupabaseStatus';
 import { useEmergencyReport } from './hooks/useEmergencyReport';
 import { EmergencyType, TranslationResult } from './types/emergency';
+import { setEmergencyUserContext, trackEmergencyEvent } from './lib/sentry';
 
 type AppState = 'recording' | 'selecting' | 'reviewing' | 'submitted' | 'error';
 
@@ -22,6 +23,30 @@ export default function App() {
   
   const { report, isSubmitting, createReport, submitReport, resetReport } = useEmergencyReport();
 
+  // Initialize Sentry user context on app load
+  useEffect(() => {
+    const sessionId = crypto.randomUUID();
+    
+    setEmergencyUserContext({
+      sessionId,
+      hasLocationAccess: !!locationData,
+      hasMicrophoneAccess: false, // Will be updated when microphone is accessed
+    });
+
+    // Track app initialization
+    trackEmergencyEvent('app_initialized', {
+      sessionId,
+      timestamp: new Date().toISOString(),
+    });
+  }, []);
+
+  // Update user context when location changes
+  useEffect(() => {
+    setEmergencyUserContext({
+      hasLocationAccess: !!locationData,
+    });
+  }, [locationData]);
+
   const handleRecordingComplete = (
     transcription: string, 
     audioBlob: Blob, 
@@ -33,6 +58,20 @@ export default function App() {
       hasAudio: !!audioBlob,
       confidence: confidence,
       translationResult: translationResult
+    });
+    
+    // Update microphone access status
+    setEmergencyUserContext({
+      hasMicrophoneAccess: true,
+    });
+    
+    // Track recording completion
+    trackEmergencyEvent('recording_completed', {
+      hasTranscription: !!transcription,
+      hasAudio: !!audioBlob,
+      confidence: Math.round(confidence * 100),
+      hasTranslation: !!translationResult,
+      sourceLanguage: translationResult?.sourceLanguage,
     });
     
     setCurrentTranscription(transcription);
@@ -54,6 +93,14 @@ export default function App() {
         hasLocation: !!locationData
       });
       
+      // Track emergency type selection
+      trackEmergencyEvent('emergency_type_selected', {
+        emergencyType: type,
+        hasLocation: !!locationData,
+        hasTranslation: !!currentTranslationResult,
+        sourceLanguage: currentTranslationResult?.sourceLanguage,
+      });
+      
       const newReport = createReport(
         currentTranscription,
         currentAudioBlob,
@@ -69,6 +116,12 @@ export default function App() {
   // Handle emergency type selection from first page
   const handleEmergencyTypeSelectFromFirstPage = (type: EmergencyType) => {
     setSelectedEmergencyType(type);
+    
+    // Track emergency type pre-selection
+    trackEmergencyEvent('emergency_type_preselected', {
+      emergencyType: type,
+    });
+    
     // Don't advance to next step, just store the selection
   };
 
@@ -82,34 +135,65 @@ export default function App() {
       emergencyType: report.emergencyType
     });
     
+    // Track submission attempt
+    trackEmergencyEvent('report_submission_started', {
+      emergencyType: report.emergencyType,
+      hasLocation: !!report.locationData,
+      hasTranslation: !!report.translatedText,
+      sourceLanguage: report.sourceLanguage,
+    });
+    
     const success = await submitReport(report);
     
     if (success) {
       console.log('✅ Multilingual emergency report submitted successfully to database');
+      
+      // Track successful submission
+      trackEmergencyEvent('report_submission_completed', {
+        emergencyType: report.emergencyType,
+        hasLocation: !!report.locationData,
+        hasTranslation: !!report.translatedText,
+        sourceLanguage: report.sourceLanguage,
+      });
+      
       setAppState('submitted');
       setTimeout(() => {
         handleStartOver();
       }, 5000);
     } else {
       console.error('❌ Failed to submit multilingual emergency report');
+      
+      // Track failed submission
+      trackEmergencyEvent('report_submission_failed', {
+        emergencyType: report.emergencyType,
+        hasLocation: !!report.locationData,
+        hasTranslation: !!report.translatedText,
+        sourceLanguage: report.sourceLanguage,
+      }, 'error');
+      
       setAppState('error');
     }
   };
 
   const handleEditReport = () => {
+    trackEmergencyEvent('report_edit_requested');
     setAppState('recording');
   };
 
   const handleBackToRecording = () => {
+    trackEmergencyEvent('navigation_back_to_recording');
     setAppState('recording');
   };
 
   const handleBackToSelection = () => {
+    trackEmergencyEvent('navigation_back_to_selection');
     setSelectedEmergencyType(null);
     setAppState('selecting');
   };
 
   const handleStartOver = () => {
+    trackEmergencyEvent('app_reset');
+    
     setAppState('recording');
     setSelectedEmergencyType(null);
     setCurrentTranscription('');
@@ -493,7 +577,10 @@ export default function App() {
 
       {/* Floating Guide Button */}
       <button
-        onClick={() => setShowGuide(true)}
+        onClick={() => {
+          setShowGuide(true);
+          trackEmergencyEvent('guide_opened');
+        }}
         className="guide-fab"
         aria-label="Open multilingual guide"
       >
@@ -502,12 +589,18 @@ export default function App() {
 
       {/* Guide Modal */}
       {showGuide && (
-        <div className="modal-overlay" onClick={() => setShowGuide(false)}>
+        <div className="modal-overlay" onClick={() => {
+          setShowGuide(false);
+          trackEmergencyEvent('guide_closed');
+        }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title">How to Use AidSpeak for Multilingual Emergencies</h2>
               <button
-                onClick={() => setShowGuide(false)}
+                onClick={() => {
+                  setShowGuide(false);
+                  trackEmergencyEvent('guide_closed');
+                }}
                 className="modal-close"
                 aria-label="Close guide"
               >

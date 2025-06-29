@@ -1,4 +1,5 @@
 import { VoiceId, TTSResponse, TTSError } from '../types/tts';
+import { trackTTSEvent, Sentry } from '../lib/sentry';
 
 /**
  * ElevenLabs Text-to-Speech Service
@@ -73,6 +74,14 @@ class TTSService {
     const cacheKey = `${voiceId}-${cleanText}`;
     if (this.audioCache.has(cacheKey)) {
       const cachedAudio = this.audioCache.get(cacheKey)!;
+      
+      // Track cached TTS
+      trackTTSEvent('generate', {
+        voiceId,
+        textLength: cleanText.length,
+        cached: true,
+      });
+      
       return {
         audioBlob: cachedAudio,
         voiceId,
@@ -86,6 +95,13 @@ class TTSService {
       if (!voice) {
         throw new TTSError(`Voice '${voiceId}' not found.`, 'INVALID_VOICE');
       }
+
+      // Track TTS generation start
+      trackTTSEvent('generate', {
+        voiceId,
+        textLength: cleanText.length,
+        cached: false,
+      });
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -143,6 +159,26 @@ class TTSService {
     } catch (error) {
       console.error('TTS generation failed:', error);
       
+      // Track TTS error
+      trackTTSEvent('error', {
+        voiceId,
+        textLength: cleanText.length,
+        errorType: error instanceof TTSError ? error.code : 'unknown',
+      });
+      
+      // Capture TTS error with Sentry
+      Sentry.withScope((scope) => {
+        scope.setTag('operation', 'tts_generation');
+        scope.setTag('voice_id', voiceId);
+        scope.setLevel('error');
+        scope.setContext('tts', {
+          voiceId,
+          textLength: cleanText.length,
+          cached: false,
+        });
+        Sentry.captureException(error);
+      });
+      
       if (error instanceof TTSError) {
         throw error;
       }
@@ -170,6 +206,11 @@ class TTSService {
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
         
+        // Track TTS play start
+        trackTTSEvent('play', {
+          cached: false, // We don't know if it was cached at this level
+        });
+        
         audio.onended = () => {
           URL.revokeObjectURL(audioUrl);
           resolve();
@@ -177,6 +218,12 @@ class TTSService {
         
         audio.onerror = (error) => {
           URL.revokeObjectURL(audioUrl);
+          
+          // Track TTS play error
+          trackTTSEvent('error', {
+            errorType: 'playback_error',
+          });
+          
           reject(new TTSError('Audio playback failed.', 'PLAYBACK_ERROR'));
         };
         
@@ -186,6 +233,11 @@ class TTSService {
         
         audio.load();
       } catch (error) {
+        // Track TTS play error
+        trackTTSEvent('error', {
+          errorType: 'audio_creation_error',
+        });
+        
         reject(new TTSError('Failed to create audio player.', 'PLAYBACK_ERROR'));
       }
     });
